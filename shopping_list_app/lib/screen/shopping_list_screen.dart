@@ -1,4 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+
+import 'package:http/http.dart' as http;
+import 'package:shopping_list_app/data/categories.dart';
 import 'package:shopping_list_app/model/grocery_item.dart';
 import 'package:shopping_list_app/screen/new_item_screen.dart';
 
@@ -12,13 +17,50 @@ class ShoppingListScreen extends StatefulWidget {
 }
 
 class _ShoppingListScreenState extends State<ShoppingListScreen> {
-  final List<GroceryItem> _groceryItems = [];
+  List<GroceryItem> _groceryItems = [];
+  var _isLoading = true;
+  String? _error;
 
-  void onDismissed(GroceryItem groceryItem) {
+  @override
+  void initState() {
+    super.initState();
+    _loadItems();
+  }
+
+  void onDismissed(GroceryItem groceryItem) async {
     final groceryIndex = _groceryItems.indexOf(groceryItem);
     setState(() {
       _groceryItems.remove(groceryItem);
     });
+
+    final url = Uri.https(
+      'flutter-prep-1b3c7-default-rtdb.firebaseio.com',
+      'shopping-list/${groceryItem.id}.json',
+    );
+
+    final response = await http.delete(url);
+    if (response.statusCode >= 400) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Error: Item cannot be deleted',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+      setState(() {
+        _groceryItems.insert(groceryIndex, groceryItem);
+      });
+      return;
+    }
+
+    if (!context.mounted) {
+      return;
+    }
 
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -26,14 +68,74 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
         content: const Text('Grocery Item Removed'),
         action: SnackBarAction(
           label: 'Undo',
-          onPressed: () {
+          onPressed: () async {
+            final url = Uri.https(
+              'flutter-prep-1b3c7-default-rtdb.firebaseio.com',
+              'shopping-list.json',
+            );
+            final response = await http.post(
+              url,
+              headers: {'Content-Type': 'application/json'},
+              body: json.encode(
+                {
+                  'name': groceryItem.name,
+                  'quantity': groceryItem.quantity,
+                  'category': groceryItem.category.name,
+                },
+              ),
+            );
+            final resData = json.decode(response.body);
+            final newGroceryItem = GroceryItem(
+              id: resData['name'],
+              name: groceryItem.name,
+              quantity: groceryItem.quantity,
+              category: groceryItem.category,
+            );
+
             setState(() {
-              _groceryItems.insert(groceryIndex, groceryItem);
+              _groceryItems.insert(groceryIndex, newGroceryItem);
             });
           },
         ),
       ),
     );
+  }
+
+  void _loadItems() async {
+    final url = Uri.https(
+      'flutter-prep-1b3c7-default-rtdb.firebaseio.com',
+      'shopping-list.json',
+    );
+    try{
+      final response = await http.get(url);
+      if(response.body == 'null'){
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      }
+      final Map<String, dynamic> listData = json.decode(response.body);
+      final List<GroceryItem> loadedItems = [];
+      for (var item in listData.entries) {
+        final categoryResult = categories.entries
+            .firstWhere((element) => element.value.name == item.value['category'])
+            .value;
+        loadedItems.add(GroceryItem(
+          id: item.key,
+          name: item.value['name'],
+          quantity: item.value['quantity'],
+          category: categoryResult,
+        ));
+      }
+      setState(() {
+        _groceryItems = loadedItems;
+        _isLoading = false;
+      });
+    } catch(error){
+      setState(() {
+          _error = 'Something Went Wrong! Please try again later.';
+        });
+    }
   }
 
   void _addItem() async {
@@ -42,11 +144,8 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
         builder: (ctx) => const NewItemScreen(),
       ),
     );
-    if (newItem == null) {
-      return;
-    }
     setState(() {
-      _groceryItems.add(newItem);
+      _groceryItems.add(newItem!);
     });
   }
 
@@ -57,7 +156,9 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
       mainContent = ListView.builder(
         itemCount: _groceryItems.length,
         itemBuilder: (ctx, index) => Dismissible(
-          background: Container( color: Colors.red,),
+          background: Container(
+            color: Colors.red,
+          ),
           key: ValueKey(_groceryItems[index].id),
           onDismissed: (direction) {
             onDismissed(_groceryItems[index]);
@@ -72,6 +173,10 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
             trailing: Text(_groceryItems[index].quantity.toString()),
           ),
         ),
+      );
+    } else if (_isLoading) {
+      mainContent = const Center(
+        child: CircularProgressIndicator(),
       );
     } else {
       mainContent = Center(
@@ -93,6 +198,11 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
             )
           ],
         ),
+      );
+    }
+    if (_error != null) {
+      mainContent = Center(
+        child: Text(_error!),
       );
     }
     return Scaffold(
